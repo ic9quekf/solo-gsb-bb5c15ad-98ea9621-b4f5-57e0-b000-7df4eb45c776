@@ -259,14 +259,21 @@
       <p style="margin:0 0 12px;color:var(--muted);font-size:13px">
         链接打开的是生成分享时脚本的只读快照（受访者视角），后续编辑不影响已分享内容。</p>
 
-      <!-- switch between creating a new snapshot and managing an existing one -->
+      <!-- switch between creating a new snapshot and managing an existing one:
+           the "＋ 新建快照" entry is always present, so a script that already
+           has snapshots can still generate another one at any time. -->
       <div class="share-pick-row">
-        <label for="sharePick" style="white-space:nowrap">管理快照</label>
-        <select id="sharePick"></select>
+        <label for="sharePick" style="white-space:nowrap">快照</label>
+        <select id="sharePick">
+          <option value="">＋ 新建快照</option>
+        </select>
       </div>
 
       <!-- create a NEW snapshot -->
       <div id="shareCreateBox">
+        <p class="share-create-hint">
+          将以<b>当前已保存的脚本内容</b>生成新的只读快照；若画布有未保存改动，点击生成时会先自动保存，
+          保存失败则保留当前编辑内容并中止创建。新快照与已有快照相互独立，旧快照的内容与译文始终保持冻结。</p>
         <div class="field">
           <label for="shareLang">快照语言（逐字段展示该语言下当时已复核的译文，缺失/待复核字段回退原文）</label>
           <select id="shareLang"></select>

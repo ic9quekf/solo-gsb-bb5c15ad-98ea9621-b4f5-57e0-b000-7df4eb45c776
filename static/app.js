@@ -1908,10 +1908,30 @@ function showSharePanelLoading() {
 
 async function openShare() {
   if (!state.currentId) return;
-  if (state.dirty) await saveScript();
   await loadI18n(state.currentId);
 
   // Language options: original text (default) or the script's target language.
+  fillShareLangOptions();
+  shareState.token = null;
+  shareState.detail = null;
+  shareState.loaded = false;
+  // New modal session: invalidate any detail/status/save responses still in
+  // flight from a previous open of this modal.
+  shareState.loadSeq++;
+  $("#shareLangNote").innerHTML = "";
+  // The picker always offers "＋ 新建快照"; opening the modal starts there so
+  // the create form (language + generate button) is reachable even when the
+  // script already has snapshots.
+  $("#sharePick").value = "";
+  showShareCreateBox();
+  openModal("shareModal");
+  // List existing snapshots for the picker, but keep "new snapshot" selected.
+  await refreshSharePick(state.currentId, "new");
+}
+
+// Populate the snapshot-language select: plain original or the script's
+// configured target language (freezing the currently reviewed translations).
+function fillShareLangOptions() {
   const sel = $("#shareLang");
   if (state.i18n.langCode) {
     sel.innerHTML =
@@ -1922,37 +1942,26 @@ async function openShare() {
   } else {
     sel.innerHTML = `<option value="">原文（脚本尚未设置目标语言）</option>`;
   }
-  shareState.token = null;
-  shareState.detail = null;
-  shareState.loaded = false;
-  // New modal session: invalidate any detail/status/save responses still in
-  // flight from a previous open of this modal.
-  shareState.loadSeq++;
-  $("#shareLangNote").innerHTML = "";
-  openModal("shareModal");
-  await refreshSharePick(state.currentId, true);
-  // Jump straight into the newest existing snapshot; with none, show the form.
-  if (shareState.token) await loadExistingShare();
 }
 
-// Load the script's snapshot list and populate the "manage snapshot" picker.
-// Returns the token now selected (or null); when the selection changes here
-// the caller is responsible for bumping the request epoch.
-async function refreshSharePick(scriptId, selectFirst = false) {
+// Load the script's snapshot list and populate the snapshot picker. The
+// "＋ 新建快照" (value="") entry is ALWAYS present at the top.
+//
+// selectMode:
+//   "new"    — keep/force the create entry selected (token becomes null);
+//   "first"  — select the newest existing snapshot (falls back to new);
+//   "keep"   — preserve the current selection if it still exists, otherwise
+//              the newest snapshot, otherwise the create entry.
+// Returns the token now selected (null = create mode).
+async function refreshSharePick(scriptId, selectMode = "keep") {
   const sel = $("#sharePick");
   try {
     shareState.shares = await api(`/api/scripts/${scriptId}/shares`);
   } catch (err) {
     shareState.shares = [];
   }
-  if (!shareState.shares.length) {
-    sel.innerHTML = `<option value="">（暂无已创建快照，请先生成一个）</option>`;
-    sel.disabled = true;
-    showShareCreateBox();
-    return null;
-  }
-  sel.disabled = false;
-  sel.innerHTML = shareState.shares.map((s) => {
+  const NEW_OPTION = `<option value="">＋ 新建快照</option>`;
+  sel.innerHTML = NEW_OPTION + shareState.shares.map((s) => {
     const dt = (s.created_at || "").replace("T", " ").slice(0, 16);
     const statusText = {
       open: "🟢 开放中", not_started: "⏳ 未开放", closed: "⛔ 已截止", full: "👥 已满",
@@ -1960,11 +1969,22 @@ async function refreshSharePick(scriptId, selectFirst = false) {
     return `<option value="${esc(s.token)}">${dt} · ${esc(statusText)} · 会话 ${s.run_count}${
       s.invite_only ? " · 🎫邀请制" : ""}${s.lang_code ? ` · 🌐${esc(s.lang_code)}` : ""}</option>`;
   }).join("");
-  const keep = shareState.shares.some((s) => s.token === shareState.token);
-  if (selectFirst || !keep) {
-    shareState.token = shareState.shares[0].token;
+  sel.disabled = false;
+
+  const keepExists = shareState.shares.some((s) => s.token === shareState.token);
+  if (selectMode === "new") {
+    shareState.token = null;
+  } else if (selectMode === "first") {
+    shareState.token = shareState.shares[0]?.token || null;
+  } else {
+    // "keep": preserve the current selection. The create entry (null) is
+    // always valid; a stale token no longer in the list falls back to the
+    // newest snapshot (or create mode when the list is empty).
+    if (shareState.token && !keepExists) {
+      shareState.token = shareState.shares[0]?.token || null;
+    }
   }
-  sel.value = shareState.token;
+  sel.value = shareState.token || "";
   return shareState.token;
 }
 
@@ -1973,21 +1993,24 @@ function showShareCreateBox() {
   $("#shareResult").style.display = "none";
 }
 
+function showShareResultBox() {
+  $("#shareCreateBox").style.display = "none";
+  $("#shareResult").style.display = "";
+}
+
 async function onSharePickChange() {
   const token = $("#sharePick").value || null;
+  // Every switch — toward the create entry or another snapshot — starts a new
+  // epoch, so detail/status/invite responses bound to the abandoned selection
+  // can never fill the panel that is about to be shown.
+  shareState.token = token;
+  shareState.detail = null;
+  shareState.loaded = false;
+  shareState.loadSeq++;
   if (!token) {
-    // No snapshot to manage: invalidate the previous selection's responses.
-    shareState.token = null;
-    shareState.detail = null;
-    shareState.loaded = false;
-    shareState.loadSeq++;
     showShareCreateBox();
     return;
   }
-  // A new selection supersedes the previous one: bump the epoch and lock the
-  // rule form until THIS snapshot's detail arrives.
-  shareState.token = token;
-  shareState.loadSeq++;
   await loadExistingShare();
 }
 
@@ -1995,8 +2018,7 @@ async function onSharePickChange() {
 async function loadExistingShare() {
   const ctx = shareRequestCtx();
   if (!ctx.token) return;
-  $("#shareCreateBox").style.display = "none";
-  $("#shareResult").style.display = "";
+  showShareResultBox();
   shareState.url = `${location.origin}/share.html?token=${encodeURIComponent(ctx.token)}`;
   $("#shareLink").value = shareState.url;
   $("#shareOpen").onclick = () => window.open(shareState.url, "_blank");
@@ -2067,10 +2089,26 @@ function renderShareLangNote(detail) {
 
 async function createShareSnapshot() {
   if (!state.currentId) return;
-  const langCode = $("#shareLang").value || null;
   const btn = $("#shareCreate");
   btn.disabled = true;
   try {
+    // A snapshot freezes the SAVED script. Flush any unsaved edits first; if
+    // that save fails, the editor content is left exactly as-is (the save
+    // endpoint never mutates the canvas) and snapshot creation is aborted —
+    // otherwise the user would silently share an older version than what is
+    // on screen.
+    if (state.dirty) {
+      try {
+        await saveScript();
+      } catch (err) {
+        toast("未保存改动保存失败，已保留编辑内容，未生成快照：" + err.message, 4000);
+        return;
+      }
+      // Saving reconciles translation pending/missing counts server-side;
+      // rebuild the language pick so it matches the new saved state.
+      fillShareLangOptions();
+    }
+    const langCode = $("#shareLang").value || null;
     const r = await api(`/api/scripts/${state.currentId}/share`, {
       method: "POST",
       body: langCode ? { lang_code: langCode } : {},
@@ -2081,13 +2119,24 @@ async function createShareSnapshot() {
     shareState.loaded = false;
     shareState.loadSeq++;
     toast("分享快照已创建");
-    // Refresh the picker (keeping the new snapshot selected), then open it.
-    await refreshSharePick(state.currentId, false);
+    // Refresh the list and KEEP the just-created snapshot selected, then open
+    // its manage panel. Older snapshots stay untouched in the list and frozen
+    // server-side (content + reviewed translations).
+    await refreshSharePick(state.currentId, "keep");
     await loadExistingShare();
   } catch (err) {
     toast("创建分享失败：" + err.message, 3500);
+    // On failure remain on the create entry so the user can retry.
+    shareState.token = null;
+    shareState.detail = null;
+    shareState.loaded = false;
+    shareState.loadSeq++;
+    $("#sharePick").value = "";
+    showShareCreateBox();
+  } finally {
+    // Re-enabled on every path, including the early return after save failure.
+    btn.disabled = false;
   }
-  btn.disabled = false;
 }
 
 // ---- answer-open rules (UTC start inclusive / deadline exclusive / cap) ----
@@ -2208,7 +2257,7 @@ async function saveShareRules() {
     // snapshot (its token is preserved by refreshSharePick).
     await Promise.all([
       renderRuleStatus(ctx),
-      refreshSharePick(state.currentId, false),
+      refreshSharePick(state.currentId, "keep"),
     ]);
   } catch (err) {
     if (isCurrentShareCtx(ctx)) {
@@ -2249,7 +2298,7 @@ async function clearShareRules() {
     }
     await Promise.all([
       renderRuleStatus(ctx),
-      refreshSharePick(state.currentId, false),
+      refreshSharePick(state.currentId, "keep"),
     ]);
   } catch (err) {
     if (isCurrentShareCtx(ctx)) {
